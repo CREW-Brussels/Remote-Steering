@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+DAEMON="/usr/bin/python /root/wifi_osc_daemon.py"  # Change path if needed
+
+start() {
+    echo "Starting WiFi OSC Daemon..."
+    $DAEMON &
+}
+
+stop() {
+    echo "Stopping WiFi OSC Daemon..."
+    $DAEMON stop
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}

@@ -1,0 +1,171 @@
+<%+header%>
+<h2>Live WiFi Data (OSC)</h2>
+<div id="wifidata">Waiting for data...</div>
+
+<!-- Container for nudge responses at the bottom -->
+<div id="nudgeResponses" style="position:fixed; bottom:0; left:0; width:100%; background:#eee; padding:10px; border-top:1px solid #ccc; max-height: 150px; overflow-y:auto;">
+  Nudge responses will appear here.
+</div>
+
+<script type="text/javascript">
+  // Build the WebSocket URL (assumes the OSC-to-WebSocket relay is on port 8765)
+  var wsUrl = "ws://" + location.hostname + ":8765";
+  console.log("Connecting to WebSocket:", wsUrl);
+  var ws = new WebSocket(wsUrl);
+
+  // Local data store for OSC WiFi data keyed by OSC address.
+  var oscData = {};
+  // Array to hold nudge response messages (displayed at the bottom)
+  var nudgeMsgs = [];
+
+  ws.onopen = function() {
+      console.log("WebSocket connection opened");
+  };
+
+  ws.onmessage = function(event) {
+      console.log("WebSocket message received:", event.data);
+      var msg;
+      try {
+          msg = JSON.parse(event.data);
+      } catch(e) {
+          console.error("Error parsing OSC message", event.data);
+          return;
+      }
+      
+      // Check if this is a nudge response message (address starting with "/nudge-response")
+      if (msg.address && msg.address.indexOf("/nudge-response") === 0) {
+          nudgeMsgs.push({ message: msg, ts: Date.now() });
+          updateNudgeResponses();
+          return; // Do not process as WiFi data.
+      }
+      
+      // Otherwise, assume it's a WiFi data message.
+      // Expected OSC address format: "/wifi-data/<hostname>"
+      // And the first argument is a JSON string representing an array of interface objects.
+      var interfaces;
+      try {
+          interfaces = JSON.parse(msg.args[0]);
+      } catch(e) {
+          console.error("Error parsing interfaces array from message", msg.args[0], e);
+          return;
+      }
+      
+      // Save or update WiFi data keyed by the OSC address.
+      oscData[msg.address] = {
+          data: interfaces,
+          ts: Date.now()
+      };
+      updateDisplay();
+  };
+
+  ws.onerror = function(error) {
+      console.error("WebSocket error:", error);
+  };
+
+  ws.onclose = function() {
+      console.log("WebSocket connection closed");
+  };
+
+  // Update the WiFi display: purge entries older than 5 seconds and build HTML.
+  function updateDisplay() {
+      var now = Date.now();
+      for (var key in oscData) {
+          if (oscData.hasOwnProperty(key)) {
+              if (now - oscData[key].ts > 5000) {
+                  delete oscData[key];
+              }
+          }
+      }
+      
+      var html = "";
+      // For each OSC entry (each router)
+      for (var addr in oscData) {
+          if (oscData.hasOwnProperty(addr)) {
+              var interfaces = oscData[addr].data;
+              // Extract hostname from OSC address (expected: "/wifi-data/<hostname>")
+              var parts = addr.split("/");
+              var hostname = parts[2] || "Unknown Host";
+              html += "<section style='margin-bottom:30px;'>";
+              html += "<h1>" + hostname + "</h1>";
+              
+              // For each interface, display AP info and a dropzone with a client table.
+              interfaces.forEach(function(iface) {
+                  var ssid = iface.ssid || "Unknown AP";
+                  var bssid = iface.bssid || "No BSSID";
+                  html += "<h2>" + ssid + " (BSSID: " + bssid + ")</h2>";
+                  // Dropzone div: its data attribute holds the neighbor parameter (BSSID info)
+                  html += "<div class='interface-dropzone' data-neighbor='" + bssid + "' ondragover='allowDrop(event)' ondrop='drop(event, this.getAttribute(\"data-neighbor\"))' style='padding:5px; border: 2px dashed #ccc; margin-bottom:10px;'>";
+                  html += "<table border='1' style='width:100%; border-collapse: collapse;'>";
+                  html += "<thead><tr><th>MAC</th><th>Signal</th><th>IP Address</th></tr></thead>";
+                  html += "<tbody>";
+                  if (iface.connected_clients && iface.connected_clients.length > 0) {
+                      iface.connected_clients.forEach(function(client) {
+                          html += "<tr draggable='true' ondragstart='drag(event)' data-mac='" + client.mac + "' style='cursor:move;'>";
+                          html += "<td>" + client.mac + "</td>";
+                          html += "<td>" + client.signal_strength + "</td>";
+                          html += "<td>" + (client.ip_address || "N/A") + "</td>";
+                          html += "</tr>";
+                      });
+                  } else {
+                      html += "<tr><td colspan='3'>No active clients</td></tr>";
+                  }
+                  html += "</tbody></table>";
+                  html += "</div>"; // End dropzone div
+              });
+              html += "</section>";
+          }
+      }
+      if (html === "") {
+          html = "No recent data";
+      }
+      document.getElementById("wifidata").innerHTML = html;
+  }
+
+  // Update the nudge responses display: purge responses older than 10 seconds and display current ones.
+  function updateNudgeResponses() {
+      var now = Date.now();
+      nudgeMsgs = nudgeMsgs.filter(function(item) {
+          return now - item.ts <= 10000;
+      });
+      var html = "";
+      nudgeMsgs.forEach(function(item) {
+          html += "<div><strong>" + item.message.address + ":</strong> " + JSON.stringify(item.message.args) + "</div>";
+      });
+      document.getElementById("nudgeResponses").innerHTML = html;
+  }
+
+  // Drag-and-drop functions:
+  function drag(ev) {
+      var mac = ev.target.getAttribute("data-mac");
+      if (!mac) {
+          mac = ev.target.parentNode.getAttribute("data-mac");
+      }
+      ev.dataTransfer.setData("text/plain", mac);
+  }
+
+  function allowDrop(ev) {
+      ev.preventDefault();
+  }
+
+  // When a client is dropped onto a dropzone, send a nudge message via WebSocket.
+  function drop(ev, neighbor) {
+      ev.preventDefault();
+      var clientMac = ev.dataTransfer.getData("text/plain");
+      if (!clientMac) {
+          console.error("No client MAC found in drag data");
+          return;
+      }
+      var nudgeMsg = {
+          type: "nudge",
+          client: clientMac,
+          neighbor: neighbor
+      };
+      console.log("Sending nudge message:", nudgeMsg);
+      ws.send(JSON.stringify(nudgeMsg));
+  }
+
+  // Refresh both displays every second.
+  setInterval(updateDisplay, 1000);
+  setInterval(updateNudgeResponses, 1000);
+</script>
+<%+footer%>
