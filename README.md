@@ -118,7 +118,7 @@ Format : Text indicating the result of the request.
     "ssid": "MySSID",
     "mode": "ap",
     "firewall_network": ["lan"],
-    "bssid": "70\:f0:96:21:9b\:c3,0x0000,81,11,6",
+    "bssid": "70:f0:96:21:9b:c3,0x0000,81,11,6",
     "connected_clients": [
       {
         "mac": "00:11:22:33:44:55",
